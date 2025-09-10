@@ -1,5 +1,5 @@
 //o que faz cada função:
-//top: é uma espécie de main que vai chamar o restante dos módulos. integra CPU single-cycle RISC-V, memória de instruções e memória de dados [imem() e dmem()].
+//top: é uma espécie de main que vai chamar e controlar o restante dos módulos. integra CPU single-cycle RISC-V, memória de instruções e memória de dados [imem() e dmem()].
 
 //riscvsingle: Integra controle e caminho de dados de um processador RISC-V single-cycle: recebe instrução e dado de memória, gera sinais de controle, executa a operação da ALU, calcula próximo PC, define endereço/dado de acesso à memória de dados e decide qual valor escrever de volta nos registradores.
 
@@ -26,85 +26,64 @@
 // regfile: evita escrita em x0 (if (we3 && a3!=0))
 // default do maindec sem 'x' pra não poluir waveform
 //Módulos com mudanças: maindec; datapath; riscvsingle; extend (e pequeno ajuste em regfile)
-module top(
-  input  logic        clk, reset, //entradas: clock, reset, 
 
-  output logic [31:0] WriteData, DataAdr,//referencia o que será escrito e endereçado na memória
+
+module top(
+  input  logic        clk, reset, //entradas: clock, reset
+
+  output logic [31:0] WriteData, DataAdr,//saídas: WriteData: informação que será escrita em WriteData e MemWrite, DataAddress:endereço da instrução, MemWrite: onclui comandos para sw
 
   output logic        MemWrite
 );
 
-  logic [31:0] PC, Instr, ReadData; //declarando os módulos usados no circuito
+  logic [31:0] PC, Instr, ReadData; //declarando as variáveis globais usadas no circuito: PC: Endereço da instrução, Instr: A própria instrução, ReadData:A instrução lida
 
   
   // Instancia CPU e memórias
   riscvsingle rvsingle(
-    .clk(clk), .reset(reset),
-    .PC(PC),
-    .Instr(Instr),
-    .MemWrite(MemWrite),
-    .ALUResult(DataAdr), // ALUResult = endereço de dados (DataAdr)
-    .WriteData(WriteData),
-    .ReadData(ReadData)
-  );
-
-  imem imem(PC, Instr);
-  dmem dmem(clk, MemWrite, DataAdr, WriteData, ReadData);
-endmodule
-
-module riscvsingle(
-  input  logic        clk, reset,
-  output logic [31:0] PC,
-  input  logic [31:0] Instr,
-  output logic        MemWrite,
-  output logic [31:0] ALUResult, WriteData,
-  input  logic [31:0] ReadData
+  .clk(clk), 
+  .reset(reset),
+  .PC(PC),
+  .Instr(Instr),
+  .MemWrite(MemWrite),
+  .ALUResult(DataAdr),
+  .WriteData(WriteData),
+  .ReadData(ReadData)
 );
 
-  logic       ALUSrc, RegWrite, Jump, Zero, PCSrc;
+  imem imem(PC, Instr); //chama a memória de instruções e passa PC
+  dmem dmem(clk, MemWrite, DataAdr, WriteData, ReadData); //chama a memória de dados e passa as instruções anteriores
+endmodule
+
+module riscvsingle(      /// entradas: clock, reset:para o controler vai defiinir o ritmo de execução e restart. Instr:instrução em RISC-V, ReadData: Leitura de dados da instrução executados na alu
+  input  logic        clk, reset,
+  output logic [31:0] PC, //saídas: é a instrução PC atual. ALUResult: resultado da operação da ULA  WriteData:Recebe informações que serão escritas juntamente com MemWrite , MemWrite: Vem do controller para definir na dmem se a informação será escrita na memória
+  input  logic [31:0] Instr, 
+  output logic        MemWrite, 
+  output logic [31:0] ALUResult, WriteData,
+  input  logic [31:0] ReadData 
+);
+
+  logic       ALUSrc, RegWrite, Jump, Zero, PCSrc; //PCSrc declarado
   logic [1:0] ResultSrc, ImmSrc;
   logic [2:0] ALUControl;
+//variaveis locais: saidas do controle e entradas do datapath.
+ controller c(Instr[6:0], Instr[14:12], Instr[30], Zero,
+             ResultSrc, MemWrite, PCSrc, ALUSrc, RegWrite, Jump,
+             ImmSrc, ALUControl);
 
-  controller c(
-    .op(Instr[6:0]),
-    .funct3(Instr[14:12]),
-    .funct7b5(Instr[30]),
-    .Zero(Zero),
-    .ResultSrc(ResultSrc),
-    .MemWrite(MemWrite),
-    .PCSrc(PCSrc),
-    .ALUSrc(ALUSrc),
-    .RegWrite(RegWrite),
-    .Jump(Jump),
-    .ImmSrc(ImmSrc),
-    .ALUControl(ALUControl)
-  );
+  datapath dp(clk, reset, ResultSrc, PCSrc, ALUSrc, RegWrite, Jump, ImmSrc, ALUControl, Zero, PC, Instr, ALUResult, WriteData, ReadData);//Jump declarado como entrada
 
-  datapath dp(
-    .clk(clk), .reset(reset),
-    .ResultSrc(ResultSrc),
-    .PCSrc(PCSrc),
-    .ALUSrc(ALUSrc),
-    .RegWrite(RegWrite),
-    .Jump(Jump),           
-    .ImmSrc(ImmSrc),
-    .ALUControl(ALUControl),
-    .Zero(Zero),
-    .PC(PC),
-    .Instr(Instr),
-    .ALUResult(ALUResult),
-    .WriteData(WriteData),
-    .ReadData(ReadData)
-  );
 endmodule
 
 
 module controller(
-  input  logic [6:0] op,
+  input  logic [6:0] op, //entradas: op(opcode) que pega os últimos 6 bits de Instr. funct3: complemento de 3 bits do opcode, funct7b5: É o bit 5 do function7 (complemento de 7 bits do opcode), Zero: Flag que vem da ALU e determina se branch de beq deve ser atendido. se  =1 o branch é atendido.
+
   input  logic [2:0] funct3,
   input  logic       funct7b5,
   input  logic       Zero,
-  output logic [1:0] ResultSrc,
+  output logic [1:0] ResultSrc, // saídas: ResultSrc: Controla o result após o processamento no mux e decide o que vai voltar para o Register File ,MemWrite: Determina em DataMemory se tem escrita na memória, PCSrc:Decide o que vai ser retornado em PCsrc depois do mux, se PC+4 ou o caminho, ALUsrc, RegWrite: determina se ele irá escrever no register file ,Jump: sinal de controle para ativar o jump, ImmSrc: No ImmGen decide qual instruçaõ será selecionada para o immediate , ALUControl:, ALUOp: formado pelos dois últimos bits do opcode, Branch: estabelece uma solicitação de branch que funciona como condicional
   output logic       MemWrite,
   output logic       PCSrc, ALUSrc,
   output logic       RegWrite, Jump,
@@ -115,32 +94,17 @@ module controller(
   logic [1:0] ALUOp;
   logic       Branch;
 
-  maindec md(
-    .op(op),
-    .ResultSrc(ResultSrc),
-    .MemWrite(MemWrite),
-    .Branch(Branch),
-    .ALUSrc(ALUSrc),
-    .RegWrite(RegWrite),
-    .Jump(Jump),
-    .ImmSrc(ImmSrc),
-    .ALUOp(ALUOp)
-  );
+  maindec md(op, ResultSrc, MemWrite, Branch,  // recebe o opcode e controla com os sinais dos demais compontes. Além do opcode recebe os sinais desses componentes.
+             ALUSrc, RegWrite, Jump, ImmSrc, ALUOp);
+  aludec  ad(op[5], funct3, funct7b5, ALUOp, ALUControl);// faz o controle da ula e recebe os seguintes parâmetros: quinto bit do opcode, funct3 que é o complemento de 3 bits do opcode, funct7b5: é o bit5 do function7, o ALUOP que pega os dois últimos bits do opcde e o Alucontrol que faz o controle da ULA
 
-  aludec ad(
-    .opb5(op[5]),
-    .funct3(funct3),
-    .funct7b5(funct7b5),
-    .ALUOp(ALUOp),
-    .ALUControl(ALUControl)
-  );
 
-  assign PCSrc = Branch & Zero; // Branch condicional; Jump tratado no datapath (PCSrcFinal)
+  assign PCSrc = Branch & Zero; // Branch condicional; Jump tratado no datapath (PCSrcFinal), quando a instriução for verificada como correta na ULA o branch=1
 endmodule
 
-module maindec(
-  input  logic [6:0] op,
-  output logic [1:0] ResultSrc,
+module maindec( 
+  input  logic [6:0] op,  //entradas: op:opcode de 6 bits, 
+  output logic [1:0] ResultSrc, //Saídas ResultSrc ,MemWrite, Branch, ALUSrc, RegWrite, Jump, ImmSrc, ALUOp
   output logic       MemWrite,
   output logic       Branch, ALUSrc,
   output logic       RegWrite, Jump,
@@ -152,12 +116,12 @@ module maindec(
   
   // controls = { RegWrite, ImmSrc(2), ALUSrc, MemWrite, ResultSrc(2), Branch, ALUOp(2), Jump }
   // Bits:       10        9:8        7       6        5:4          3       2:1       0
-  assign {RegWrite, ImmSrc, ALUSrc, MemWrite, ResultSrc, Branch, ALUOp, Jump} = controls;
+  assign {RegWrite, ImmSrc, ALUSrc, MemWrite, ResultSrc, Branch, ALUOp, Jump} = controls; //adiciona o Jump no final da declaraçaõ de controle do datapath, essas saídas são juntas por questões de otimização
 
-  always_comb
+  always_comb //como um switch case, vai avaliar os casos que recebe do opcode completo
     case(op)
       //RegWrite_ImmSrc_ALUSrc_MemWrite_ResultSrc_Branch_ALUOp_Jump
-      7'b0000011: controls = 11'b1_00_1_0_01_0_00_0; // lw     : I-type, write-back ReadData
+      7'b0000011: controls = 11'b1_00_1_0_01_0_00_0; // lw     : I-type, write-back ReadData ocorre a escrita no registeador (chamando o write-back) RegWrite: 01; ImSrc: 00, AluSrc: 1
       7'b0100011: controls = 11'b0_01_1_1_00_0_00_0; // sw     : S-type, store
       7'b0110011: controls = 11'b1_00_0_0_00_0_10_0; // R-type : ALU operations (ALUOp=10)
       7'b1100011: controls = 11'b0_10_0_0_00_1_01_0; // beq    : B-type, subtract compare (ALUOp=01)
@@ -194,7 +158,7 @@ endmodule
 
 
 module datapath(
-  input  logic        clk, reset,
+  input  logic        clk, reset, //entradas:clk ,reset:Usados no Register File, ResultSrc:aqui o mux decide se o dado vai para Register File ou não,PCSrc:Define em PCNext MUX se PC vai receber o endereço pra proxima instrução normal ou com um salto ,ALUSrc:,Regwrite, Jump, ImSrc, Alucontrol, Instr, ReadData 
   input  logic [1:0]  ResultSrc, 
   input  logic        PCSrc, ALUSrc,
   input  logic        RegWrite, Jump,
@@ -311,18 +275,18 @@ module extend(
 endmodule
 
 
-module flopr #(parameter WIDTH = 8)(
+module flopr #(parameter WIDTH = 8)( //entradas: clik reset: controle do flip flop, d: informação do estado final
   input  logic             clk, reset,
   input  logic [WIDTH-1:0] d, 
-  output logic [WIDTH-1:0] q
+  output logic [WIDTH-1:0] q //saídas: q: estado final do flip-flop 
 );
-  always_ff @(posedge clk, posedge reset)
-    if (reset) q <= '0;
-    else       q <= d;
+  always_ff @(posedge clk, posedge reset)//mudanças de estados só acontecem baseadas no clik e reset
+    if (reset) q <= '0;  //se reset=1, é necessario apagar a informação do flipflop, entao a saida é 0 e não armazena nada no pc
+    else       q <= d;// caso contrário, q recebe a informação do estadoa tual
 endmodule
 
 
-module mux2 #(parameter WIDTH = 8)(
+module mux2 #(parameter WIDTH = 8)( //
   input  logic [WIDTH-1:0] d0, d1, 
   input  logic             s, 
   output logic [WIDTH-1:0] y
@@ -331,7 +295,7 @@ module mux2 #(parameter WIDTH = 8)(
 endmodule
 
 
-module mux3 #(parameter WIDTH = 8)(
+module mux3 #(parameter WIDTH = 8)(//
   input  logic [WIDTH-1:0] d0, d1, d2,
   input  logic [1:0]       s, 
   output logic [WIDTH-1:0] y
@@ -339,47 +303,48 @@ module mux3 #(parameter WIDTH = 8)(
   assign y = s[1] ? d2 : (s[0] ? d1 : d0); 
 endmodule
 
-module imem(
-  input  logic [31:0] a,
-  output logic [31:0] rd
+module imem(//InstructionMemory
+  input  logic [31:0] a, //entradas: a instrução de 32 bits que representa o PC
+  output logic [31:0] rd //saídas: rd devolve a instrução loda
 );
-  logic [31:0] RAM[0:63]; 
+  logic [31:0] RAM[63:0];//memória do computador (uma matriz 64 linhdas de 32 bits) 
 
   initial
-    $readmemh("riscvtest.txt", RAM); 
+    $readmemh("riscvtest.txt", RAM);  //lê o arquivo de teste
 
-  assign rd = RAM[a[31:2]]; // word aligned
+  assign rd = RAM[a[31:2]]; // word aligned recebe todas as linhas com os bits de 2 a 31
 endmodule
 
 
-module dmem(
-  input  logic        clk, we,
+module dmem(  // dataMemory
+  input  logic        clk, we, //entradas clock, we:sinal para fazer a escrita da informação recebida por a , a:saida obtida pela ULA que pode variar de endereços a resultado de contas, wd:dado recebido pelo Register File (regfile), 
   input  logic [31:0] a, wd,
-  output logic [31:0] rd
+  output logic [31:0] rd //saídas: rd:ReadData: Quando a=endereço de memória rd é o dado que esse endereço carrega logic [31:0] RAM[63:0]
 );
-  logic [31:0] RAM[0:63];
+  logic [31:0] RAM[63:0];
 
   assign rd = RAM[a[31:2]]; // leitura combinacional
 
-  always_ff @(posedge clk)
-    if (we) RAM[a[31:2]] <= wd;
+  always_ff @(posedge clk)//ação que sempre acontecerá na saída do clock
+    if (we) RAM[a[31:2]] <= wd; //se MemoryWrite for igual a  1 , a inforação recebida na entrada "a" (vindo da ula) é escrita 
+
 endmodule
 
 
 module alu(
-  input  logic [31:0] a, b,
+  input  logic [31:0] a, b,  //entradas: a, b: um valor a ser operado, alucontrol: um controle de 3 bits que vai definir a operação entre a e b
   input  logic [2:0]  alucontrol,
-  output logic [31:0] result,
+  output logic [31:0] result, //saídas: result: vai ser o resultadod de f(a,b), zero: Comparação entre a e b: se a=b, zero = 1 se nãp zero=0, condinvb: avalia se necessita inverter b para alguma operação, sum:resultado da soma v:verifica se tem overflow na operaçao, isaddSub: verifica qual operação é necessária se soma ou subtração
   output logic        zero
 );
   logic [31:0] condinvb, sum;
   logic        v;
   logic        isAddSub;
 
-  assign condinvb = alucontrol[0] ? ~b : b;
-  assign sum      = a + condinvb + alucontrol[0];
+  assign condinvb = alucontrol[0] ? ~b : b; //inverte os bits de b de acordo com o aluontrol se alucontrol[0]=1 a inversão é feita, caso contrário não.
+  assign sum      = a + condinvb + alucontrol[0]; // soma entre a e b, mas dependendo da "posição do alucontrol" se alucontrol[0] = 0 é uma soma que decve ser feita e o complemento de dois aplicado, se nãao deve ser feita uma subtração.
   assign isAddSub = (~alucontrol[2] & ~alucontrol[1]) |
-                    (~alucontrol[1] &  alucontrol[0]);
+    (~alucontrol[1] &  alucontrol[0]);// indica se a operação da ALU é soma ou subtração, facilitando o uso do mesmo circuito para ambas.Se o valor for 1, é adição ou subtração; se for 0, é outra operação (and, or, shift, etc)
 
   always_comb
     case (alucontrol) 
@@ -398,4 +363,3 @@ module alu(
   assign v    = ~(alucontrol[0] ^ a[31] ^ b[31]) &
     (a[31] ^ sum[31]) & isAddSub; // overflow add/sub //
 endmodule
-
