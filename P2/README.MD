@@ -1,4 +1,4 @@
-####Instruções de compilação fora do simulador####
+### Instruções de compilação fora do simulador
 - Baixar o ícarus verilog e executar
 ```https://bleyer.org/icarus/```
 - Adicionar ao PATH
