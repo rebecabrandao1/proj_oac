@@ -1,14 +1,18 @@
 /*o que foi adicionado:
 1 -  módulo hazardunit - identifica os riscos e gera os sinais de controle para evitá-los
-2 -  sinais de controle adicionais na controller e datapath (PCSrcE)
+2 -  sinais de controle adicionais na controller e datapath (PCSrcE) e também havia a existencia de sinais na riscv que não estavam sendo usados pois não havia o hazardunit (ResultSrcEb0, ForwardAE, ForwardBE, StallF, StallD, FlushD, FlushE, Rs1D, Rs2D, Rs1E, Rs2E, RdE, RdM, RdW, RegWriteM, RegWriteW)
 */
-/* como funciona no datapath: O hazardunit é o componente central que observa as instruções, detecta dependências e gera os sinais de Forward (adiantar), Stall (pausar) e Flush (limpar) para garantir que o fluxo de execução no pipeline seja sempre correto.*/
-
+/* como funciona no datapath:*/
 
 module hazardunit(input  logic        clk, reset,
                     input  logic [4:0]  Rs1D, Rs2D, Rs1E, Rs2E, RdE, RdM, RdW,
                     input  logic        RegWriteM, RegWriteW,
-                    input  logic        ResultSrcEb0,
+                    input  logi/* O endereço que está no pc é usado para ler a instrução da memória no imem. A instrução vai ser lida e salva no pipeline do reg if/id. Essa instrução forne os números dos registradores relacionados, cujo o id vai decodificar. São lidos dos registradores: o imediato e o regfile. Esses valores lidos são armazenados no pipe de id/ex*/c /* Agora entra a parte do hazard detection: onde occoree o stall  avalia as instruções que estão sendo lidas no if/id e no id/ex. Se houver uma instrução de load na ex que está tentando usar um registrador que está sendo carregado, a unidade de hazard detecta isso e gera sinais de stall para pausar o pipeline. Isso impede que a próxima instrução avance até que os dados necessários estejam disponíveis, masntendo as instruções no mesmo lugar e força os campos de controle a estarem em 0.*/
+/*Em suma,  se no mux de entrada da alu, o dado que vem do banco de registradores (regfile) for igual ao dado que está sendo carregado na memória (dmem), o hazardunit detecta isso e gera um stall para pausar o pipeline até que o dado esteja disponível. Isso evita que a alu use um valor incorreto ou desatualizado, garantindo a integridade dos dados e a correta execução das instruções no pipeline.*/
+/*Sobre a execuçaõ e o forwarding: é onde a alu opera (agora a instrução armazenada no id/ex é enviada para a lu que possui dois multiplexadores de entrada controlados pela unidade de fowarding que detecta se o operando que a alu precisa está disponível e m um operador de pipeline (ex/mem mem/wb) e ainda não foi escrito de volta no regfile. Se estiver disponível, o mux seleciona esse valor para a alu, caso contrário, seleciona o valor do regfile. Isso permite que a alu use os dados mais recentes sem esperar que sejam escritos de volta no regfile, melhorando a eficiência do pipeline e reduzindo stalls desnecessários.*/)  /* Os sinais forward a e forward b são usados para direcionar os multiplexadores que escolhem os dados para alu (como o valor encaminhado de ex/mem ou mem/wb). A alu vai executar o cálculo para load/store*/
+/* Na fase de memória o resultado da alu é colcoado no reg ex/mem, se a instrução for um store, os dados a serem escritos na memória são provenientes do regfile (que podem ter sido encaminhados se necessário). Se for um load, os dados lidos da memória são armazenados no pipeline mem/wb.*/
+/* Por fim, a escrita de volta WB os dados da alu ou os lidos da memória são escritos de volta no regfile e lido em MEM/WB  garantindo que o número de registrador de destino coreeto é passado e que seja usado, completando o ciclo de execução da instrução.*/
+     ResultSrcEb0,
                     input  logic        PCSrcE,        // ADICIONADO: sinal de controle de desvio/jump
                     output logic [1:0]  ForwardAE, ForwardBE,
                     output logic        StallF, StallD, FlushD, FlushE);
@@ -23,29 +27,29 @@ Se a instrução na fase de escrita (WB) está escrevendo em um registrador (Reg
 Caso contrário, os dados são usados diretamente da fase de decodificação (ForwardAE = 2'b00).*/
   always_comb
     if (RegWriteM & (RdM != 0) & (RdM == Rs1E))
-      ForwardAE = 2'b10; // from MEM stage  -- o primeiro comando da Alu vem encaminhado de alguma operação anterior da alu
+      ForwardAE = 2'b10; // from MEM stage
     else if (RegWriteW & (RdW != 0) & (RdW == Rs1E))
-      ForwardAE = 2'b01; // from WB stage -- o primeiro comando da Alu vem encaminhado da memória de dados ou de alguma operação anterior da alu
+      ForwardAE = 2'b01; // from WB stage
     else
-      ForwardAE = 2'b00; // from ID/EX stage -- o primeiro comando da Alu vem do banco de registradores
+      ForwardAE = 2'b00; // from ID/EX stage
 
   // similar ao anterior, mas para a entrada B da ALU (ForwardBE)
   always_comb
     if (RegWriteM & (RdM != 0) & (RdM == Rs2E))
-      ForwardBE = 2'b10; // from MEM stage  -- o segundo comando da Alu vem encaminhado de alguma operação anterior da alu
+      ForwardBE = 2'b10; // from MEM stage
     else if (RegWriteW & (RdW != 0) & (RdW == Rs2E))
-      ForwardBE = 2'b01; // from WB stage -- o segundo operando da Alu vem encaminhado da memória de dados ou de alguma operação anterior da alu
+      ForwardBE = 2'b01; // from WB stage
     else
-      ForwardBE = 2'b00; // from ID/EX stage o segundo operando da Alu vem do banco de registradores
-/*Além disso, o hazardunit também detecta as situações que envolve stalls e flushes:
+      ForwardBE = 2'b00; // from ID/EX stage
+/*Além disso, o hazardunit também detect as situações que envolve stalls e flushes:
 - StallF e StallD são ativados quando há um risco de dados devido a uma instrução de carregamento (load) na fase de execução (EX) que está tentando usar um registrador que está sendo carregado. Isso é indicado por ResultSrcEb0 (que indica que a instrução atual na fase EX é um load) e a comparação dos registradores Rs1D e Rs2D com RdE.
 - FlushD é ativado quando há um desvio (branch) ou salto (jump) na fase de execução (EX), indicado por PCSrcE.
 - FlushE é ativado tanto por stalls (StallF) quanto por desvios/jumps (PCSrcE). Isso garante que a instrução na fase de execução seja descartada se houver um desvio ou se houver um stall necessário.    
 */
 
-  assign StallF = (ResultSrcEb0 & ((RdE == Rs1D) | (RdE == Rs2D))) ? 1 : 0; // se a instrução na fase EX é um load e o registrador de destino (RdE) é igual a qualquer um dos registradores de origem na fase ID (Rs1D ou Rs2D), então StallF é ativado
-  assign StallD = StallF; // StallD é ativado nas mesmas condições que StallF
-  assign FlushD = PCSrcE; // FlushD é ativado se houver um desvio ou salto na fase EX
+  assign StallF = (ResultSrcEb0 & ((RdE == Rs1D) | (RdE == Rs2D))) ? 1 : 0;
+  assign StallD = StallF;
+  assign FlushD = PCSrcE;
   assign FlushE = StallF || PCSrcE; // PCSrcE needs to be defined in the context where hazardunit is used
 endmodule
 
@@ -86,8 +90,8 @@ module riscv(input  logic        clk, reset,  /*module riscv(): implementa uma C
   logic        StallF, StallD, FlushD, FlushE;
 
   logic [4:0] Rs1D, Rs2D, Rs1E, Rs2E, RdE, RdM, RdW;
-
-  controller c(clk, reset,  /*o controller chama os sinais de datapath, hazardunit e controller*/
+  
+  controller c(clk, reset,  /*o controller chama os sinais de datapath, hazardunit*/
                opD, funct3D, funct7b5D, ImmSrcD,
                FlushE, ZeroE, PCSrcE, ALUControlE, ALUSrcE, ResultSrcEb0,
                MemWriteM, RegWriteM, 
@@ -109,8 +113,8 @@ module riscv(input  logic        clk, reset,  /*module riscv(): implementa uma C
 endmodule
 
 
-module controller(input  logic		 clk, reset, // o módulo controller gera os sinais de controle necessários para o funcionamento do processador RISC-V, coordenando as operações em diferentes estágios do pipeline.
-                  // Decode stage control signals  //entradas: opD(opcode) que pega os últimos 6 bits de Instr. funct3D: complemento de 3 bits do opcode, funct7b5: É o bit 5 do function7 (complemento de 7 bits do opcode), FlushE, Zero: Flag que vem da ALU e determina se branch de beq deve ser atendido. se  =1 o branch é atendido. Os sinais com D no final são da fase de decodificação, com E são da fase de execução, com M são da fase de memória e com W são da fase de escrita.
+module controller(input  logic		 clk, reset,
+                  // Decode stage control signals
                   input logic [6:0]  opD,
                   input logic [2:0]  funct3D,
                   input logic 	     funct7b5D,
@@ -357,14 +361,14 @@ module extend(input  logic [31:7] instr,
     endcase             
 endmodule
 
-module flopr #(parameter WIDTH = 8) // o módulo flopr é um flip-flop com reset assíncrono
-              (input  logic             clk, reset, //entradas: clk: clock, reset: controle do flip flop, d: informação do estado final
-               input  logic [WIDTH-1:0] d,  
-               output logic [WIDTH-1:0] q); //saídas: q: informação do estado inicial
+module flopr #(parameter WIDTH = 8)
+              (input  logic             clk, reset,
+               input  logic [WIDTH-1:0] d, 
+               output logic [WIDTH-1:0] q);
 
-  always_ff @(posedge clk, posedge reset) ///mudanças de estados só acontecem baseadas no clik e reset
-    if (reset) q <= 0; //se reset=1, é necessario apagar a informação do flipflop, entao a saida é 0 e não armazena nada no pc
-    else       q <= d; //// caso contrário, q recebe a informação do estadoa tual
+  always_ff @(posedge clk, posedge reset)
+    if (reset) q <= 0;
+    else       q <= d;
 endmodule
 
 module flopenr #(parameter WIDTH = 8)
@@ -377,69 +381,69 @@ module flopenr #(parameter WIDTH = 8)
     else if (en) q <= d;
 endmodule
 
-module flopenrc #(parameter WIDTH = 8) // o módulo flopenrc é um flip-flop com sinal de habilitação e limpeza assíncrona
-                (input  logic             clk, reset, clear, en, //entradas: clk: clock, reset: sinal de reset assíncrono, clear: sinal de limpeza assíncrona, en: sinal de habilitação, d: dado de entrada de WIDTH bits
+module flopenrc #(parameter WIDTH = 8)
+                (input  logic             clk, reset, clear, en,
                  input  logic [WIDTH-1:0] d, 
-                 output logic [WIDTH-1:0] q); //saídas: q: dado de saída de WIDTH bits
+                 output logic [WIDTH-1:0] q);
 
-  always_ff @(posedge clk, posedge reset) //ação que sempre acontecerá na saída do clock ou no reset
-    if (reset)   q <= 0; //se reset for igual a 1 , q recebe 0
-    else if (en)  //se en for igual a 1 , q recebe o valor de d
-      if (clear) q <= 0; //se clear for igual a 1 , q recebe 0
-      else       q <= d; //se clear for igual a 0 , q recebe o valor de d
+  always_ff @(posedge clk, posedge reset)
+    if (reset)   q <= 0;
+    else if (en) 
+      if (clear) q <= 0;
+      else       q <= d;
 endmodule
 
-module floprc #(parameter WIDTH = 8) // o módulo floprc é um flip-flop com sinal de limpeza assíncrona
-              (input  logic clk, //entradas: clk: clock, reset: sinal de reset assíncrono, clear: sinal de limpeza assíncrona, d: dado de entrada de WIDTH bits
+module floprc #(parameter WIDTH = 8)
+              (input  logic clk,
                input  logic reset,
                input  logic clear,
                input  logic [WIDTH-1:0] d, 
-               output logic [WIDTH-1:0] q); //saídas: q: dado de saída de WIDTH bits
+               output logic [WIDTH-1:0] q);
 
-  always_ff @(posedge clk, posedge reset) //ação que sempre acontecerá na saída do clock ou no reset
-    if (reset) q <= 0; //se reset for igual a 1 , q recebe 0
+  always_ff @(posedge clk, posedge reset)
+    if (reset) q <= 0;
     else       
-      if (clear) q <= 0; //se clear for igual a 1 , q recebe 0
-      else       q <= d; //se clear for igual a 0 , q recebe o valor de d
+      if (clear) q <= 0;
+      else       q <= d;
 endmodule
 
-module mux2 #(parameter WIDTH = 8) // multiplexador de 2 entradas
-             (input  logic [WIDTH-1:0] d0, d1, // entradas: d0, d1: dados de entrada de WIDTH bits
-              input  logic             s, // seletor para escolher entre as 2 entradas
-              output logic [WIDTH-1:0] y); // saídas: y: dado de saída de WIDTH bits
+module mux2 #(parameter WIDTH = 8)
+             (input  logic [WIDTH-1:0] d0, d1, 
+              input  logic             s, 
+              output logic [WIDTH-1:0] y);
 
   assign y = s ? d1 : d0; 
 endmodule
 
-module mux3 #(parameter WIDTH = 8) // multiplexador de 3 entradas
-             (input  logic [WIDTH-1:0] d0, d1, d2, // entradas: d0, d1, d2: dados de entrada de WIDTH bits
-              input  logic [1:0]       s, // seletor de 2 bits para escolher entre as 3 entradas
-              output logic [WIDTH-1:0] y); // saídas: y: dado de saída de WIDTH bits
+module mux3 #(parameter WIDTH = 8)
+             (input  logic [WIDTH-1:0] d0, d1, d2,
+              input  logic [1:0]       s, 
+              output logic [WIDTH-1:0] y);
 
-  assign y = s[1] ? d2 : (s[0] ? d1 : d0); // se s[1] for 1, y recebe d2; se s[1] for 0 e s[0] for 1, y recebe d1; caso contrário, y recebe d0 
+  assign y = s[1] ? d2 : (s[0] ? d1 : d0); 
 endmodule
 
-module imem(input  logic [31:0] a,  //entradas: a instrução de 32 bits que representa o PC
-            output logic [31:0] rd); //saídas: rd devolve a instrução lida
+module imem(input  logic [31:0] a,
+            output logic [31:0] rd);
 
-  logic [31:0] RAM[63:0]; //memória do computador (uma matriz 64 linhas de 32 bits)
+  logic [31:0] RAM[63:0];
 
   initial
-      $readmemh("riscvtest.txt",RAM); //lê o arquivo de teste
+      $readmemh("riscvtest.txt",RAM);
 
-  assign rd = RAM[a[31:2]]; // word aligned // word aligned recebe todas as linhas com os bits de 2 a 31
+  assign rd = RAM[a[31:2]]; // word aligned
 endmodule
 
-module dmem(input  logic        clk, we,  //entradas clock, we:sinal para fazer a escrita da informação recebida por a , a:saida obtida pela ULA que pode variar de endereços a resultado de contas, wd:dado recebido pelo Register File (regfile),
+module dmem(input  logic        clk, we,
             input  logic [31:0] a, wd,
-            output logic [31:0] rd); //saídas: rd:ReadData: Quando a=endereço de memória rd é o dado que esse endereço carrega logic [31:0] RAM[63:0]
+            output logic [31:0] rd);
 
   logic [31:0] RAM[63:0];
 
   assign rd = RAM[a[31:2]]; // word aligned
 
-  always_ff @(posedge clk) //ação que sempre acontecerá na saída do clock
-    if (we) RAM[a[31:2]] <= wd; //se MemoryWrite for igual a  1 , a inforação recebida na entrada "a" (vindo da ula) é escrita 
+  always_ff @(posedge clk)
+    if (we) RAM[a[31:2]] <= wd;
 endmodule
 
 module alu(input  logic [31:0] a, b,/*entradas: a, b: um valor a ser operado, alucontrol: um controle de 3 bits que vai definir a operação entre a e b; saídas:  //saídas: result: vai ser o resultadod de f(a,b), zero: Comparação entre a e b: se a=b, zero = 1 se nãp zero=0, condinvb: avalia se necessita inverter b para alguma operação, sum:resultado da soma v:verifica se tem overflow na operaçao, isaddSub: verifica qual operação é necessária se soma ou subtração*/
